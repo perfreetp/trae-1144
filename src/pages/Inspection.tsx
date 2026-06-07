@@ -4,7 +4,7 @@ import { useAppStore } from '@/store/useAppStore'
 import DataTable from '@/components/DataTable'
 import Modal from '@/components/Modal'
 import StatusBadge from '@/components/StatusBadge'
-import type { EquipmentRecord, InspectionTask, GateRecord, Complaint } from '@/types'
+import type { GateRecord } from '@/types'
 
 const tabs = ['器材借还', '保洁巡检', '闸机记录', '投诉处理']
 const inspectionTypeMap: Record<string, string> = { cleaning: '保洁', equipment: '设备', gate: '闸机' }
@@ -13,7 +13,7 @@ const complaintCategoryOptions = ['设施问题', '服务态度', '卫生问题'
 export default function Inspection() {
   const [tab, setTab] = useState(0)
   const { equipment, equipmentRecords, inspectionTasks, gateRecords, complaints, members, venues,
-    addEquipmentRecord, updateEquipmentStock, completeInspection, addInspectionTask, addComplaint, updateComplaintStatus } = useAppStore()
+    addEquipmentRecord, updateEquipmentStock, startInspection, completeInspection, addInspectionTask, addComplaint, updateComplaintStatus } = useAppStore()
 
   const [borrowOpen, setBorrowOpen] = useState(false)
   const [returnOpen, setReturnOpen] = useState(false)
@@ -90,7 +90,7 @@ export default function Inspection() {
     { key: 'status', header: '状态', render: (r: any) => <StatusBadge status={r.status} /> },
     { key: 'description', header: '问题描述' },
     { key: 'action', header: '操作', render: (r: any) => {
-      if (r.status === 'pending') return <button className="btn-primary text-xs px-3 py-1" onClick={() => completeInspection(r.id)}>开始</button>
+      if (r.status === 'pending') return <button className="btn-primary text-xs px-3 py-1" onClick={() => startInspection(r.id)}>开始</button>
       if (r.status === 'in_progress') return <button className="btn-primary text-xs px-3 py-1" onClick={() => completeInspection(r.id)}>完成</button>
       return <span className="text-surface-500">—</span>
     }},

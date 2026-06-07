@@ -8,6 +8,7 @@ import {
 import { useAppStore } from '@/store/useAppStore'
 import StatCard from '@/components/StatCard'
 import StatusBadge from '@/components/StatusBadge'
+import type { CourtStatus } from '@/types'
 
 const TODAY = '2026-06-08'
 
@@ -32,6 +33,7 @@ const alertIconMap: Record<string, { Icon: React.ElementType; color: string }> =
 
 export default function Dashboard() {
   const venues = useAppStore((s) => s.venues)
+  const slotOverrides = useAppStore((s) => s.slotOverrides)
   const reservations = useAppStore((s) => s.reservations)
   const dailyStats = useAppStore((s) => s.dailyStats)
   const gateRecords = useAppStore((s) => s.gateRecords)
@@ -40,6 +42,25 @@ export default function Dashboard() {
   const complaints = useAppStore((s) => s.complaints)
   const refundRequests = useAppStore((s) => s.refundRequests)
   const markAlertRead = useAppStore((s) => s.markAlertRead)
+
+  const timeSlots = ['08-10', '10-12', '12-14', '14-16', '16-18', '18-20', '20-22']
+
+  const getCourtEffectiveStatus = (court: { id: string; status: string }): string => {
+    let hasLocked = false
+    let hasOccupied = false
+    let hasBooking = false
+    for (const ts of timeSlots) {
+      const override = slotOverrides[`${court.id}|${ts}`]
+      if (override) {
+        if (override.bookingId) hasBooking = true
+        if (override.status === 'locked') hasLocked = true
+        if (override.status === 'occupied') hasOccupied = true
+      }
+    }
+    if (hasLocked || hasBooking) return 'locked'
+    if (hasOccupied) return 'occupied'
+    return court.status
+  }
 
   const todayRevenue = useMemo(
     () => dailyStats.filter((s) => s.date === TODAY).reduce((sum, s) => sum + s.revenue, 0),
@@ -58,9 +79,12 @@ export default function Dashboard() {
 
   const utilizationRate = useMemo(() => {
     const allCourts = venues.flatMap((v) => v.courts)
-    const occupied = allCourts.filter((c) => c.status === 'occupied').length
+    const occupied = allCourts.filter((c) => {
+      const effective = getCourtEffectiveStatus(c)
+      return effective === 'occupied' || effective === 'locked'
+    }).length
     return allCourts.length > 0 ? Math.round((occupied / allCourts.length) * 100) : 0
-  }, [venues])
+  }, [venues, slotOverrides])
 
   const unreadAlerts = useMemo(() => alerts.filter((a) => !a.isRead), [alerts])
 
@@ -96,7 +120,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {venues.map((venue) => {
           const VenueIcon = venueIconMap[venue.type] ?? CircleDollarSign
-          const available = venue.courts.filter((c) => c.status === 'available').length
+          const available = venue.courts.filter((c) => getCourtEffectiveStatus(c) === 'available').length
           return (
             <div key={venue.id} className="card p-5">
               <div className="flex items-center gap-3 mb-4">
@@ -109,17 +133,20 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {venue.courts.map((court) => (
-                  <div
-                    key={court.id}
-                    className={`rounded-lg border bg-surface-900/40 p-2.5 transition-all ${courtGlow[court.status]}`}
-                  >
-                    <p className="text-xs font-medium text-surface-200 truncate">{court.name}</p>
-                    <div className="mt-1">
-                      <StatusBadge status={court.status} />
+                {venue.courts.map((court) => {
+                  const effectiveStatus = getCourtEffectiveStatus(court) as CourtStatus
+                  return (
+                    <div
+                      key={court.id}
+                      className={`rounded-lg border bg-surface-900/40 p-2.5 transition-all ${courtGlow[effectiveStatus] ?? courtGlow.available}`}
+                    >
+                      <p className="text-xs font-medium text-surface-200 truncate">{court.name}</p>
+                      <div className="mt-1">
+                        <StatusBadge status={effectiveStatus} />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )

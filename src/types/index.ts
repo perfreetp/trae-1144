@@ -36,7 +36,27 @@ export type EquipmentCondition = 'good' | 'damaged'
 
 export type TransactionType = 'topup' | 'consumption' | 'refund'
 
+export type BookingStatus = 'pending' | 'confirmed' | 'cancelled'
+
 export type AlertType = 'error' | 'warning' | 'info'
+
+export interface GroupBooking {
+  id: string
+  venueId: string
+  venueName: string
+  courtId: string
+  courtName: string
+  date: string
+  startTime: string
+  endTime: string
+  timeSlots: string[]
+  contactName: string
+  contactPhone: string
+  price: number
+  notes: string
+  status: BookingStatus
+  createdAt: string
+}
 
 export interface PricingSlot {
   id: string

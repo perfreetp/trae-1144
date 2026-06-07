@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type {
   Venue, Court, Reservation, Member, Course, Activity, Enrollment,
   InspectionTask, Complaint, RefundRequest, GateRecord, EquipmentRecord,
-  Equipment, Transaction, Alert, DailyStats, Coach
+  Equipment, Transaction, Alert, DailyStats, Coach, GroupBooking, CourtStatus
 } from '@/types'
 
 const venues: Venue[] = [
@@ -296,6 +296,12 @@ function generateDailyStats(): DailyStats[] {
 
 const dailyStats = generateDailyStats()
 
+interface SlotOverride {
+  status: CourtStatus
+  reason?: string
+  bookingId?: string
+}
+
 interface AppState {
   sidebarCollapsed: boolean
   alertCount: number
@@ -315,17 +321,22 @@ interface AppState {
   transactions: Transaction[]
   alerts: Alert[]
   dailyStats: DailyStats[]
+  slotOverrides: Record<string, SlotOverride>
+  groupBookings: GroupBooking[]
 
   toggleSidebar: () => void
   setAlertCount: (count: number) => void
   confirmReservation: (id: string) => void
   cancelReservation: (id: string) => void
+  lockSlot: (courtId: string, timeSlot: string, reason: string) => void
+  unlockSlot: (courtId: string, timeSlot: string) => void
   lockCourt: (id: string, reason: string) => void
   unlockCourt: (id: string) => void
   approveRefund: (id: string) => void
   rejectRefund: (id: string) => void
   checkInEnrollment: (id: string) => void
   markAlertRead: (id: string) => void
+  startInspection: (id: string) => void
   completeInspection: (id: string) => void
   updateComplaintStatus: (id: string, status: Complaint['status'], assignee?: string) => void
   addTransaction: (memberId: string, type: Transaction['type'], amount: number, description: string) => void
@@ -338,6 +349,7 @@ interface AppState {
   addGateRecord: (record: Omit<GateRecord, 'id'>) => void
   addInspectionTask: (task: Omit<InspectionTask, 'id'>) => void
   addComplaint: (complaint: Omit<Complaint, 'id'>) => void
+  addGroupBooking: (booking: Omit<GroupBooking, 'id'>) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -359,6 +371,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   transactions,
   alerts,
   dailyStats,
+  slotOverrides: {},
+  groupBookings: [],
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setAlertCount: (count) => set({ alertCount: count }),
@@ -370,6 +384,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   cancelReservation: (id) => set((s) => ({
     reservations: s.reservations.map(r => r.id === id ? { ...r, status: 'cancelled' as const } : r)
   })),
+
+  lockSlot: (courtId, timeSlot, reason) => set((s) => ({
+    slotOverrides: { ...s.slotOverrides, [`${courtId}|${timeSlot}`]: { status: 'locked', reason } }
+  })),
+
+  unlockSlot: (courtId, timeSlot) => set((s) => {
+    const next = { ...s.slotOverrides }
+    delete next[`${courtId}|${timeSlot}`]
+    return { slotOverrides: next }
+  }),
 
   lockCourt: (id, reason) => set((s) => ({
     venues: s.venues.map(v => ({
@@ -402,8 +426,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { alerts: newAlerts, alertCount: newAlerts.filter(a => !a.isRead).length }
   }),
 
+  startInspection: (id) => set((s) => ({
+    inspectionTasks: s.inspectionTasks.map(t => t.id === id && t.status === 'pending' ? { ...t, status: 'in_progress' as const } : t)
+  })),
+
   completeInspection: (id) => set((s) => ({
-    inspectionTasks: s.inspectionTasks.map(t => t.id === id ? { ...t, status: 'completed' as const } : t)
+    inspectionTasks: s.inspectionTasks.map(t => t.id === id && t.status === 'in_progress' ? { ...t, status: 'completed' as const } : t)
   })),
 
   updateComplaintStatus: (id, status, assignee) => set((s) => ({
@@ -455,9 +483,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     activities: [{ ...activity, id: `a${Date.now()}` }, ...s.activities]
   })),
 
-  addEnrollment: (enrollment) => set((s) => ({
-    enrollments: [{ ...enrollment, id: `e${Date.now()}` }, ...s.enrollments]
-  })),
+  addEnrollment: (enrollment) => set((s) => {
+    const newState: Partial<AppState> = {
+      enrollments: [{ ...enrollment, id: `e${Date.now()}` }, ...s.enrollments],
+    }
+    if (enrollment.type === 'course' && enrollment.courseId) {
+      newState.courses = s.courses.map(c =>
+        c.id === enrollment.courseId ? { ...c, enrolled: c.enrolled + 1 } : c
+      )
+    }
+    if (enrollment.type === 'activity' && enrollment.activityId) {
+      newState.activities = s.activities.map(a =>
+        a.id === enrollment.activityId ? { ...a, enrolled: a.enrolled + 1 } : a
+      )
+    }
+    return newState
+  }),
 
   addGateRecord: (record) => set((s) => ({
     gateRecords: [{ ...record, id: `g${Date.now()}` }, ...s.gateRecords]
@@ -470,4 +511,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   addComplaint: (complaint) => set((s) => ({
     complaints: [{ ...complaint, id: `cp${Date.now()}` }, ...s.complaints]
   })),
+
+  addGroupBooking: (booking) => set((s) => {
+    const id = `gb${Date.now()}`
+    const overrides: Record<string, SlotOverride> = { ...s.slotOverrides }
+    for (const ts of booking.timeSlots) {
+      overrides[`${booking.courtId}|${ts}`] = { status: 'locked', reason: `团体包场: ${booking.contactName}`, bookingId: id }
+    }
+    return {
+      groupBookings: [{ ...booking, id }, ...s.groupBookings],
+      slotOverrides: overrides,
+    }
+  }),
 }))
