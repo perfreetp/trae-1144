@@ -56,6 +56,8 @@ export interface GroupBooking {
   notes: string
   status: BookingStatus
   createdAt: string
+  confirmedAt?: string
+  cancelledAt?: string
 }
 
 export interface PricingSlot {

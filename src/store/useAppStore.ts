@@ -420,7 +420,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const slots = timeSlotsFromRange(reservation.startTime, reservation.endTime)
     const overrides = { ...s.slotOverrides }
     for (const ts of slots) {
-      overrides[`${reservation.courtId}|${reservation.date}|${ts}`] = {
+      const key = `${reservation.courtId}|${reservation.date}|${ts}`
+      const existing = overrides[key]
+      if (existing && existing.status !== 'available') continue
+      overrides[key] = {
         status: 'occupied',
         reason: `预约: ${reservation.memberName}`,
         reservationId: id,
@@ -433,9 +436,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
 
   cancelReservation: (id) => set((s) => {
+    const reservation = s.reservations.find(r => r.id === id)
     const overrides = { ...s.slotOverrides }
     for (const key of Object.keys(overrides)) {
-      if (overrides[key].reservationId === id) delete overrides[key]
+      if (overrides[key].reservationId === id) {
+        const parts = key.split('|')
+        const courtId = parts[0]
+        const court = s.venues.flatMap(v => v.courts).find(c => c.id === courtId)
+        if (court && court.status !== 'available') {
+          overrides[key] = { status: 'available' as CourtStatus }
+        } else {
+          delete overrides[key]
+        }
+      }
     }
     return {
       reservations: s.reservations.map(r => r.id === id ? { ...r, status: 'cancelled' as const } : r),
@@ -443,9 +456,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   }),
 
-  lockSlot: (courtId, date, timeSlot, reason) => set((s) => ({
-    slotOverrides: { ...s.slotOverrides, [`${courtId}|${date}|${timeSlot}`]: { status: 'locked', reason } }
-  })),
+  lockSlot: (courtId, date, timeSlot, reason) => set((s) => {
+    const key = `${courtId}|${date}|${timeSlot}`
+    const existing = s.slotOverrides[key]
+    if (existing && existing.status !== 'available') return s
+    return {
+      slotOverrides: { ...s.slotOverrides, [key]: { status: 'locked', reason } }
+    }
+  }),
 
   unlockSlot: (courtId, date, timeSlot) => set((s) => {
     const key = `${courtId}|${date}|${timeSlot}`
@@ -588,26 +606,40 @@ export const useAppStore = create<AppState>((set, get) => ({
     const booking = s.groupBookings.find(b => b.id === id)
     if (!booking) return s
     const overrides = { ...s.slotOverrides }
+    const now = new Date().toLocaleString('zh-CN')
     for (const ts of booking.timeSlots) {
-      overrides[`${booking.courtId}|${booking.date}|${ts}`] = {
+      const key = `${booking.courtId}|${booking.date}|${ts}`
+      const existing = overrides[key]
+      if (existing && existing.status !== 'available') continue
+      overrides[key] = {
         status: 'locked',
         reason: `团体包场: ${booking.contactName}`,
         bookingId: id,
       }
     }
     return {
-      groupBookings: s.groupBookings.map(b => b.id === id ? { ...b, status: 'confirmed' as const } : b),
+      groupBookings: s.groupBookings.map(b => b.id === id ? { ...b, status: 'confirmed' as const, confirmedAt: now } : b),
       slotOverrides: overrides,
     }
   }),
 
   cancelGroupBooking: (id) => set((s) => {
     const overrides = { ...s.slotOverrides }
+    const now = new Date().toLocaleString('zh-CN')
     for (const key of Object.keys(overrides)) {
-      if (overrides[key].bookingId === id) delete overrides[key]
+      if (overrides[key].bookingId === id) {
+        const parts = key.split('|')
+        const courtId = parts[0]
+        const court = s.venues.flatMap(v => v.courts).find(c => c.id === courtId)
+        if (court && court.status !== 'available') {
+          overrides[key] = { status: 'available' as CourtStatus }
+        } else {
+          delete overrides[key]
+        }
+      }
     }
     return {
-      groupBookings: s.groupBookings.map(b => b.id === id ? { ...b, status: 'cancelled' as const } : b),
+      groupBookings: s.groupBookings.map(b => b.id === id ? { ...b, status: 'cancelled' as const, cancelledAt: now } : b),
       slotOverrides: overrides,
     }
   }),

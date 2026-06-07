@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { Lock, Wrench, Users, Calendar, ChevronLeft, ChevronRight, CheckCircle, XCircle } from 'lucide-react'
+import { Lock, Wrench, Users, Calendar, ChevronLeft, ChevronRight, CheckCircle, XCircle, Info, Eye } from 'lucide-react'
 import { useAppStore } from '@/store/useAppStore'
 import Modal from '@/components/Modal'
 import StatusBadge from '@/components/StatusBadge'
 import DataTable from '@/components/DataTable'
-import type { Court, CourtStatus } from '@/types'
+import type { Court, CourtStatus, GroupBooking } from '@/types'
 
 const timeSlots = ['08-10', '10-12', '12-14', '14-16', '16-18', '18-20', '20-22']
 const venueTabs = [
@@ -60,18 +60,32 @@ const statusLabels: Record<CourtStatus, string> = {
   maintenance: '维护',
 }
 
+interface ConflictInfo {
+  hasConflict: boolean
+  details: { timeSlot: string; source: string; sourceType: 'lock' | 'booking' | 'reservation' }[]
+}
+
+function getEffectiveBaseStatus(court: Court): CourtStatus {
+  if (court.status === 'locked' || court.status === 'maintenance') return court.status
+  return 'available'
+}
+
 export default function Schedule() {
-  const { venues, slotOverrides, groupBookings, lockSlot, unlockSlot, addGroupBooking, confirmGroupBooking, cancelGroupBooking } = useAppStore()
+  const { venues, slotOverrides, groupBookings, reservations, lockSlot, unlockSlot, addGroupBooking, confirmGroupBooking, cancelGroupBooking } = useAppStore()
   const [selectedVenue, setSelectedVenue] = useState('all')
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()))
   const [lockModalOpen, setLockModalOpen] = useState(false)
   const [unlockModalOpen, setUnlockModalOpen] = useState(false)
   const [groupBookingOpen, setGroupBookingOpen] = useState(false)
+  const [detailModalOpen, setDetailModalOpen] = useState(false)
+  const [sourceInfoOpen, setSourceInfoOpen] = useState(false)
   const [selectedCourt, setSelectedCourt] = useState<Court | null>(null)
   const [selectedSlot, setSelectedSlot] = useState('')
   const [lockReason, setLockReason] = useState('')
   const [unlockReason, setUnlockReason] = useState('')
   const [unlockOverrideType, setUnlockOverrideType] = useState<'lock' | 'booking' | 'reservation' | 'court'>('lock')
+  const [selectedBooking, setSelectedBooking] = useState<GroupBooking | null>(null)
+  const [sourceOverrideKey, setSourceOverrideKey] = useState('')
 
   const [bookingForm, setBookingForm] = useState({
     venueId: '', courtId: '', date: '', startTime: '', endTime: '',
@@ -96,7 +110,36 @@ export default function Schedule() {
       if (override.reservationId) return { status: override.status, reason: override.reason, overrideType: 'reservation' }
       return { status: override.status, reason: override.reason, overrideType: 'lock' }
     }
-    return { status: court.status }
+    return { status: getEffectiveBaseStatus(court) }
+  }
+
+  const checkConflicts = (courtId: string, date: string, timeSlotList: string[]): ConflictInfo => {
+    const details: ConflictInfo['details'] = []
+    for (const ts of timeSlotList) {
+      const key = `${courtId}|${date}|${ts}`
+      const override = slotOverrides[key]
+      if (override && override.status !== 'available') {
+        let sourceType: ConflictInfo['details'][0]['sourceType'] = 'lock'
+        let source = ''
+        if (override.bookingId) {
+          sourceType = 'booking'
+          const booking = groupBookings.find(b => b.id === override.bookingId)
+          source = booking ? `团体包场 ${booking.id}（${booking.contactName} ${booking.startTime}-${booking.endTime}）` : `包场 ${override.bookingId}`
+        } else if (override.reservationId) {
+          sourceType = 'reservation'
+          const res = reservations.find(r => r.id === override.reservationId)
+          source = res ? `预约 ${res.id}（${res.memberName} ${res.startTime}-${res.endTime}）` : `预约 ${override.reservationId}`
+        } else {
+          source = override.reason ? `锁场（${override.reason}）` : '锁场'
+        }
+        details.push({ timeSlot: ts, source, sourceType })
+      }
+      const court = venues.flatMap(v => v.courts).find(c => c.id === courtId)
+      if (court && (court.status === 'locked' || court.status === 'maintenance') && !override) {
+        details.push({ timeSlot: ts, source: `场地整体${court.status === 'locked' ? '锁定' : '维护中'}`, sourceType: 'lock' })
+      }
+    }
+    return { hasConflict: details.length > 0, details }
   }
 
   const handleCellClick = (court: Court, ts: string) => {
@@ -106,17 +149,26 @@ export default function Schedule() {
       setSelectedSlot(ts)
       setLockReason('')
       setLockModalOpen(true)
-    } else if (status === 'locked' || status === 'occupied') {
+    } else {
       setSelectedCourt(court)
       setSelectedSlot(ts)
       setUnlockReason(reason ?? '')
       setUnlockOverrideType(overrideType ?? (court.status === 'locked' ? 'court' : 'lock'))
-      setUnlockModalOpen(true)
+      const key = `${court.id}|${selectedDate}|${ts}`
+      const override = slotOverrides[key]
+      if (override && (override.bookingId || override.reservationId)) {
+        setSourceOverrideKey(key)
+        setSourceInfoOpen(true)
+      } else {
+        setUnlockModalOpen(true)
+      }
     }
   }
 
   const handleLock = () => {
     if (selectedCourt && selectedSlot && lockReason.trim()) {
+      const conflict = checkConflicts(selectedCourt.id, selectedDate, [selectedSlot])
+      if (conflict.hasConflict) return
       lockSlot(selectedCourt.id, selectedDate, selectedSlot, lockReason.trim())
       setLockModalOpen(false)
       setSelectedCourt(null)
@@ -189,6 +241,11 @@ export default function Schedule() {
     { key: 'contactName', header: '联系人' },
     { key: 'price', header: '价格', render: (row: any) => `¥${row.price}` },
     { key: 'status', header: '状态', render: (row: any) => <StatusBadge status={row.status} label={row.status === 'pending' ? '待处理' : row.status === 'confirmed' ? '已确认' : '已取消'} /> },
+    { key: 'detail', header: '', render: (row: any) => (
+      <button className="text-xs text-surface-400 hover:text-accent-400 flex items-center gap-1" onClick={() => { setSelectedBooking(row); setDetailModalOpen(true) }}>
+        <Eye className="h-3 w-3" />详情
+      </button>
+    )},
     { key: 'actions', header: '操作', render: (row: any) => {
       if (row.status === 'pending') return (
         <div className="flex gap-2">
@@ -216,6 +273,57 @@ export default function Schedule() {
     reservation: '释放预约',
     court: '解锁场地时段',
   }
+
+  const bookingConflict = bookingForm.venueId && bookingForm.courtId && bookingForm.date && bookingForm.startTime && bookingForm.endTime
+    ? checkConflicts(bookingForm.courtId, bookingForm.date, getBookedTimeSlots())
+    : null
+
+  const lockConflict = selectedCourt && selectedSlot
+    ? checkConflicts(selectedCourt.id, selectedDate, [selectedSlot])
+    : null
+
+  const getSourceDetail = (key: string) => {
+    const override = slotOverrides[key]
+    if (!override) return null
+    if (override.bookingId) {
+      const booking = groupBookings.find(b => b.id === override.bookingId)
+      return {
+        type: 'booking' as const,
+        id: override.bookingId,
+        label: '包场申请单号',
+        contactName: booking?.contactName,
+        contactPhone: booking?.contactPhone,
+        timeRange: booking ? `${booking.startTime}-${booking.endTime}` : '',
+        reason: override.reason,
+        status: booking?.status,
+      }
+    }
+    if (override.reservationId) {
+      const res = reservations.find(r => r.id === override.reservationId)
+      return {
+        type: 'reservation' as const,
+        id: override.reservationId,
+        label: '预约订单号',
+        contactName: res?.memberName,
+        contactPhone: '',
+        timeRange: res ? `${res.startTime}-${res.endTime}` : '',
+        reason: override.reason,
+        status: res?.status,
+      }
+    }
+    return {
+      type: 'lock' as const,
+      id: '',
+      label: '锁场',
+      contactName: '',
+      contactPhone: '',
+      timeRange: '',
+      reason: override.reason,
+      status: '' as const,
+    }
+  }
+
+  const sourceDetail = sourceOverrideKey ? getSourceDetail(sourceOverrideKey) : null
 
   return (
     <div className="space-y-6">
@@ -364,18 +472,30 @@ export default function Schedule() {
             <div className="text-sm text-surface-300">
               时段：<span className="text-surface-100 font-medium">{selectedSlot}</span>
             </div>
-            <div>
-              <label className="block text-sm text-surface-400 mb-1">锁定原因</label>
-              <textarea
-                className="input-field w-full h-24 resize-none"
-                value={lockReason}
-                onChange={e => setLockReason(e.target.value)}
-                placeholder="请输入锁定原因"
-              />
-            </div>
+            {lockConflict && lockConflict.hasConflict && (
+              <div className="text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-3 space-y-1">
+                <div className="text-red-400 font-medium flex items-center gap-1"><Info className="h-3 w-3" />时段冲突，无法锁定</div>
+                {lockConflict.details.map((d, i) => (
+                  <div key={i} className="text-red-300">{d.timeSlot} 已被 {d.source} 占用</div>
+                ))}
+              </div>
+            )}
+            {!lockConflict?.hasConflict && (
+              <div>
+                <label className="block text-sm text-surface-400 mb-1">锁定原因</label>
+                <textarea
+                  className="input-field w-full h-24 resize-none"
+                  value={lockReason}
+                  onChange={e => setLockReason(e.target.value)}
+                  placeholder="请输入锁定原因"
+                />
+              </div>
+            )}
             <div className="flex justify-end gap-3">
               <button className="btn-secondary" onClick={() => setLockModalOpen(false)}>取消</button>
-              <button className="btn-danger" onClick={handleLock} disabled={!lockReason.trim()}>确认锁定</button>
+              {!lockConflict?.hasConflict && (
+                <button className="btn-danger" onClick={handleLock} disabled={!lockReason.trim()}>确认锁定</button>
+              )}
             </div>
           </div>
         )}
@@ -407,6 +527,114 @@ export default function Schedule() {
             <div className="flex justify-end gap-3">
               <button className="btn-secondary" onClick={() => setUnlockModalOpen(false)}>取消</button>
               <button className="btn-primary" onClick={handleUnlock}>确认解锁</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal isOpen={sourceInfoOpen} onClose={() => { setSourceInfoOpen(false); setSourceOverrideKey('') }} title="占用来源详情" size="md">
+        {sourceDetail && selectedCourt && (
+          <div className="space-y-4">
+            <div className="text-sm text-surface-300">
+              场地：<span className="text-surface-100 font-medium">{selectedCourt.name}</span> · 日期：<span className="text-surface-100 font-medium">{formatDisplayDate(selectedDate)}</span> · 时段：<span className="text-surface-100 font-medium">{selectedSlot}</span>
+            </div>
+            <div className="bg-surface-800/40 rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  sourceDetail.type === 'booking' ? 'bg-purple-500/20 text-purple-400' :
+                  sourceDetail.type === 'reservation' ? 'bg-blue-500/20 text-blue-400' :
+                  'bg-red-500/20 text-red-400'
+                }`}>
+                  {sourceDetail.type === 'booking' ? '包场占用' : sourceDetail.type === 'reservation' ? '预约占用' : '锁场'}
+                </span>
+              </div>
+              {sourceDetail.id && (
+                <div className="text-sm text-surface-300">
+                  {sourceDetail.label}：<span className="text-surface-100 font-mono">{sourceDetail.id}</span>
+                </div>
+              )}
+              {sourceDetail.contactName && (
+                <div className="text-sm text-surface-300">
+                  联系人：<span className="text-surface-100">{sourceDetail.contactName}</span>
+                  {sourceDetail.contactPhone && <span className="text-surface-400 ml-2">{sourceDetail.contactPhone}</span>}
+                </div>
+              )}
+              {sourceDetail.timeRange && (
+                <div className="text-sm text-surface-300">
+                  时间范围：<span className="text-surface-100">{sourceDetail.timeRange}</span>
+                </div>
+              )}
+              {sourceDetail.reason && (
+                <div className="text-sm text-surface-300">
+                  原因：<span className="text-surface-100">{sourceDetail.reason}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-3">
+              <button className="btn-secondary" onClick={() => { setSourceInfoOpen(false); setSourceOverrideKey('') }}>关闭</button>
+              <button className="btn-primary" onClick={() => {
+                setSourceInfoOpen(false)
+                setSourceOverrideKey('')
+                setUnlockModalOpen(true)
+              }}>解锁此时段</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal isOpen={detailModalOpen} onClose={() => { setDetailModalOpen(false); setSelectedBooking(null) }} title="包场申请详情" size="lg">
+        {selectedBooking && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="text-surface-300">场馆：<span className="text-surface-100">{selectedBooking.venueName}</span></div>
+              <div className="text-surface-300">场地：<span className="text-surface-100">{selectedBooking.courtName}</span></div>
+              <div className="text-surface-300">日期：<span className="text-surface-100">{formatDisplayDate(selectedBooking.date)}</span></div>
+              <div className="text-surface-300">时间：<span className="text-surface-100">{selectedBooking.startTime} - {selectedBooking.endTime}</span></div>
+              <div className="text-surface-300">联系人：<span className="text-surface-100">{selectedBooking.contactName}</span></div>
+              <div className="text-surface-300">联系电话：<span className="text-surface-100">{selectedBooking.contactPhone}</span></div>
+              <div className="text-surface-300">价格：<span className="text-accent-400 font-medium">¥{selectedBooking.price}</span></div>
+              <div className="text-surface-300">
+                状态：<StatusBadge status={selectedBooking.status} label={selectedBooking.status === 'pending' ? '待处理' : selectedBooking.status === 'confirmed' ? '已确认' : '已取消'} />
+              </div>
+            </div>
+            <div className="text-sm text-surface-300">
+              覆盖时段：<span className="text-surface-100">{(selectedBooking.timeSlots as string[]).join('、')}</span>
+            </div>
+            {selectedBooking.notes && (
+              <div className="text-sm text-surface-300">
+                备注：<span className="text-surface-100">{selectedBooking.notes}</span>
+              </div>
+            )}
+            <div className="bg-surface-800/40 rounded-lg p-4 space-y-2">
+              <div className="text-sm font-medium text-surface-200">审批记录</div>
+              <div className="text-xs text-surface-400">申请时间：{selectedBooking.createdAt}</div>
+              {selectedBooking.confirmedAt && (
+                <div className="text-xs text-accent-400 flex items-center gap-1"><CheckCircle className="h-3 w-3" />确认时间：{selectedBooking.confirmedAt}</div>
+              )}
+              {selectedBooking.cancelledAt && (
+                <div className="text-xs text-red-400 flex items-center gap-1"><XCircle className="h-3 w-3" />取消时间：{selectedBooking.cancelledAt}</div>
+              )}
+              {!selectedBooking.confirmedAt && !selectedBooking.cancelledAt && selectedBooking.status === 'pending' && (
+                <div className="text-xs text-warning-400">等待审批</div>
+              )}
+            </div>
+            <div className="flex justify-end gap-3">
+              <button className="btn-secondary" onClick={() => { setDetailModalOpen(false); setSelectedBooking(null) }}>关闭</button>
+              {selectedBooking.status === 'pending' && (
+                <>
+                  <button className="btn-danger" onClick={() => { cancelGroupBooking(selectedBooking.id); setDetailModalOpen(false); setSelectedBooking(null) }}>
+                    <XCircle className="h-3 w-3 inline mr-1" />取消申请
+                  </button>
+                  <button className="btn-primary" onClick={() => { confirmGroupBooking(selectedBooking.id); setDetailModalOpen(false); setSelectedBooking(null) }}>
+                    <CheckCircle className="h-3 w-3 inline mr-1" />确认包场
+                  </button>
+                </>
+              )}
+              {selectedBooking.status === 'confirmed' && (
+                <button className="btn-danger" onClick={() => { cancelGroupBooking(selectedBooking.id); setDetailModalOpen(false); setSelectedBooking(null) }}>
+                  <XCircle className="h-3 w-3 inline mr-1" />取消包场
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -461,10 +689,18 @@ export default function Schedule() {
               将覆盖时段：<span className="text-accent-400">{getBookedTimeSlots().join('、') || '无匹配时段'}</span>
             </div>
           )}
+          {bookingConflict && bookingConflict.hasConflict && (
+            <div className="col-span-2 text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-3 space-y-1">
+              <div className="text-red-400 font-medium flex items-center gap-1"><Info className="h-3 w-3" />以下时段存在冲突</div>
+              {bookingConflict.details.map((d, i) => (
+                <div key={i} className="text-red-300">{d.timeSlot} 已被 {d.source} 占用</div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex justify-end gap-3 mt-4">
           <button className="btn-secondary" onClick={() => setGroupBookingOpen(false)}>取消</button>
-          <button className="btn-primary" onClick={handleBookingSubmit} disabled={!bookingForm.venueId || !bookingForm.courtId || !bookingForm.date || !bookingForm.startTime || !bookingForm.endTime || !bookingForm.contactName}>提交申请</button>
+          <button className="btn-primary" onClick={handleBookingSubmit} disabled={!bookingForm.venueId || !bookingForm.courtId || !bookingForm.date || !bookingForm.startTime || !bookingForm.endTime || !bookingForm.contactName || (bookingConflict?.hasConflict ?? false)}>提交申请</button>
         </div>
       </Modal>
     </div>

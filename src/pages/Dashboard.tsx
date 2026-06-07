@@ -59,7 +59,8 @@ export default function Dashboard() {
     }
     if (hasLocked || hasBooking) return 'locked'
     if (hasOccupied) return 'occupied'
-    return court.status
+    if (court.status === 'locked' || court.status === 'maintenance') return court.status
+    return 'available'
   }
 
   const todayRevenue = useMemo(
