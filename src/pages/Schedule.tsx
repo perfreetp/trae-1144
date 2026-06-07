@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Lock, Wrench, Users, Calendar } from 'lucide-react'
+import { Lock, Wrench, Users, Calendar, ChevronLeft, ChevronRight, CheckCircle, XCircle } from 'lucide-react'
 import { useAppStore } from '@/store/useAppStore'
 import Modal from '@/components/Modal'
 import StatusBadge from '@/components/StatusBadge'
@@ -14,6 +14,35 @@ const venueTabs = [
   { key: 'swimming', label: '游泳馆' },
 ]
 
+const ALL_TIME_SLOTS = timeSlots
+
+function timeSlotsFromRange(startTime: string, endTime: string): string[] {
+  const startHour = parseInt(startTime.split(':')[0] || '0')
+  const endHour = parseInt(endTime.split(':')[0] || '0')
+  const result: string[] = []
+  for (const ts of ALL_TIME_SLOTS) {
+    const [slotStart, slotEnd] = ts.split('-').map(Number)
+    if (slotStart < endHour && slotEnd > startHour) {
+      result.push(ts)
+    }
+  }
+  return result
+}
+
+function formatDate(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function formatDisplayDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-')
+  const date = new Date(parseInt(y), parseInt(m) - 1, parseInt(d))
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六']
+  return `${parseInt(m)}月${parseInt(d)}日 周${weekdays[date.getDay()]}`
+}
+
 const cellStyles: Record<CourtStatus, string> = {
   available: 'bg-accent-500/20 border border-accent-500/30 hover:bg-accent-500/30 cursor-pointer',
   occupied: 'bg-warning-500/20 border border-warning-500/30',
@@ -22,6 +51,7 @@ const cellStyles: Record<CourtStatus, string> = {
 }
 
 const bookingCellStyles = 'bg-purple-500/20 border border-purple-500/30 cursor-pointer'
+const reservationCellStyles = 'bg-blue-500/20 border border-blue-500/30 cursor-pointer'
 
 const statusLabels: Record<CourtStatus, string> = {
   available: '可用',
@@ -31,56 +61,63 @@ const statusLabels: Record<CourtStatus, string> = {
 }
 
 export default function Schedule() {
-  const { venues, slotOverrides, groupBookings, lockSlot, unlockSlot, addGroupBooking } = useAppStore()
+  const { venues, slotOverrides, groupBookings, lockSlot, unlockSlot, addGroupBooking, confirmGroupBooking, cancelGroupBooking } = useAppStore()
   const [selectedVenue, setSelectedVenue] = useState('all')
+  const [selectedDate, setSelectedDate] = useState(formatDate(new Date()))
   const [lockModalOpen, setLockModalOpen] = useState(false)
   const [unlockModalOpen, setUnlockModalOpen] = useState(false)
   const [groupBookingOpen, setGroupBookingOpen] = useState(false)
   const [selectedCourt, setSelectedCourt] = useState<Court | null>(null)
   const [selectedSlot, setSelectedSlot] = useState('')
   const [lockReason, setLockReason] = useState('')
+  const [unlockReason, setUnlockReason] = useState('')
+  const [unlockOverrideType, setUnlockOverrideType] = useState<'lock' | 'booking' | 'reservation' | 'court'>('lock')
 
   const [bookingForm, setBookingForm] = useState({
     venueId: '', courtId: '', date: '', startTime: '', endTime: '',
     contactName: '', contactPhone: '', price: '', notes: '',
   })
 
+  const changeDate = (delta: number) => {
+    const d = new Date(selectedDate)
+    d.setDate(d.getDate() + delta)
+    setSelectedDate(formatDate(d))
+  }
+
   const filteredCourts = selectedVenue === 'all'
     ? venues.flatMap(v => v.courts.map(c => ({ ...c, venueName: v.name })))
     : venues.filter(v => v.type === selectedVenue).flatMap(v => v.courts.map(c => ({ ...c, venueName: v.name })))
 
-  const getSlotStatus = (court: Court, ts: string): { status: CourtStatus; reason?: string; isBooking?: boolean } => {
-    const key = `${court.id}|${ts}`
+  const getSlotStatus = (court: Court, ts: string): { status: CourtStatus; reason?: string; overrideType?: 'lock' | 'booking' | 'reservation' } => {
+    const key = `${court.id}|${selectedDate}|${ts}`
     const override = slotOverrides[key]
     if (override) {
-      const isBooking = !!override.bookingId
-      return { status: override.status, reason: override.reason, isBooking }
+      if (override.bookingId) return { status: override.status, reason: override.reason, overrideType: 'booking' }
+      if (override.reservationId) return { status: override.status, reason: override.reason, overrideType: 'reservation' }
+      return { status: override.status, reason: override.reason, overrideType: 'lock' }
     }
     return { status: court.status }
   }
 
   const handleCellClick = (court: Court, ts: string) => {
-    const { status, reason, isBooking } = getSlotStatus(court, ts)
+    const { status, reason, overrideType } = getSlotStatus(court, ts)
     if (status === 'available') {
       setSelectedCourt(court)
       setSelectedSlot(ts)
       setLockReason('')
       setLockModalOpen(true)
-    } else if (status === 'locked') {
+    } else if (status === 'locked' || status === 'occupied') {
       setSelectedCourt(court)
       setSelectedSlot(ts)
       setUnlockReason(reason ?? '')
-      setUnlockIsBooking(!!isBooking)
+      setUnlockOverrideType(overrideType ?? (court.status === 'locked' ? 'court' : 'lock'))
       setUnlockModalOpen(true)
     }
   }
 
-  const [unlockReason, setUnlockReason] = useState('')
-  const [unlockIsBooking, setUnlockIsBooking] = useState(false)
-
   const handleLock = () => {
     if (selectedCourt && selectedSlot && lockReason.trim()) {
-      lockSlot(selectedCourt.id, selectedSlot, lockReason.trim())
+      lockSlot(selectedCourt.id, selectedDate, selectedSlot, lockReason.trim())
       setLockModalOpen(false)
       setSelectedCourt(null)
       setSelectedSlot('')
@@ -90,7 +127,7 @@ export default function Schedule() {
 
   const handleUnlock = () => {
     if (selectedCourt && selectedSlot) {
-      unlockSlot(selectedCourt.id, selectedSlot)
+      unlockSlot(selectedCourt.id, selectedDate, selectedSlot)
       setUnlockModalOpen(false)
       setSelectedCourt(null)
       setSelectedSlot('')
@@ -98,14 +135,7 @@ export default function Schedule() {
   }
 
   const getBookedTimeSlots = (): string[] => {
-    const slots: string[] = []
-    const start = parseInt(bookingForm.startTime.split(':')[0] || '0')
-    const end = parseInt(bookingForm.endTime.split(':')[0] || '0')
-    for (let h = start; h < end; h += 2) {
-      const ts = `${String(h).padStart(2, '0')}-${String(h + 2).padStart(2, '0')}`
-      if (timeSlots.includes(ts)) slots.push(ts)
-    }
-    return slots
+    return timeSlotsFromRange(bookingForm.startTime, bookingForm.endTime)
   }
 
   const handleBookingSubmit = () => {
@@ -154,35 +184,87 @@ export default function Schedule() {
   const bookingColumns = [
     { key: 'venueName', header: '场馆' },
     { key: 'courtName', header: '场地' },
-    { key: 'date', header: '日期' },
+    { key: 'date', header: '日期', render: (row: any) => formatDisplayDate(row.date) },
     { key: 'timeSlots', header: '时段', render: (row: any) => (row.timeSlots as string[]).join('、') },
     { key: 'contactName', header: '联系人' },
     { key: 'price', header: '价格', render: (row: any) => `¥${row.price}` },
     { key: 'status', header: '状态', render: (row: any) => <StatusBadge status={row.status} label={row.status === 'pending' ? '待处理' : row.status === 'confirmed' ? '已确认' : '已取消'} /> },
+    { key: 'actions', header: '操作', render: (row: any) => {
+      if (row.status === 'pending') return (
+        <div className="flex gap-2">
+          <button className="btn-primary text-xs px-3 py-1 flex items-center gap-1" onClick={() => confirmGroupBooking(row.id)}><CheckCircle className="h-3 w-3" />确认</button>
+          <button className="btn-danger text-xs px-3 py-1 flex items-center gap-1" onClick={() => cancelGroupBooking(row.id)}><XCircle className="h-3 w-3" />取消</button>
+        </div>
+      )
+      if (row.status === 'confirmed') return (
+        <button className="btn-danger text-xs px-3 py-1 flex items-center gap-1" onClick={() => cancelGroupBooking(row.id)}><XCircle className="h-3 w-3" />取消包场</button>
+      )
+      return <span className="text-surface-500">—</span>
+    }},
   ]
 
   const bookingCourts = bookingForm.venueId
     ? venues.find(v => v.id === bookingForm.venueId)?.courts ?? []
     : []
 
+  const dateBookings = groupBookings.filter(b => b.date === selectedDate)
+  const otherBookings = groupBookings.filter(b => b.date !== selectedDate)
+
+  const unlockTitleMap = {
+    lock: '解锁场地',
+    booking: '解锁包场',
+    reservation: '释放预约',
+    court: '解锁场地时段',
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex gap-2">
-          {venueTabs.map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => setSelectedVenue(tab.key)}
-              className={selectedVenue === tab.key ? 'btn-primary' : 'btn-secondary'}
-            >
-              {tab.label}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <div className="flex gap-2">
+            {venueTabs.map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setSelectedVenue(tab.key)}
+                className={selectedVenue === tab.key ? 'btn-primary' : 'btn-secondary'}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1 bg-surface-800/60 rounded-lg p-1">
+            <button className="p-1.5 rounded hover:bg-surface-700/60 text-surface-400 hover:text-surface-200 transition-colors" onClick={() => changeDate(-1)}>
+              <ChevronLeft className="h-4 w-4" />
             </button>
-          ))}
+            <input
+              type="date"
+              className="input-field !py-1 !px-2 text-sm w-36 text-center"
+              value={selectedDate}
+              onChange={e => setSelectedDate(e.target.value)}
+            />
+            <button className="p-1.5 rounded hover:bg-surface-700/60 text-surface-400 hover:text-surface-200 transition-colors" onClick={() => changeDate(1)}>
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <button
+              className="text-xs px-2 py-1 rounded hover:bg-surface-700/60 text-surface-400 hover:text-accent-400 transition-colors"
+              onClick={() => setSelectedDate(formatDate(new Date()))}
+            >
+              今天
+            </button>
+          </div>
         </div>
-        <button className="btn-primary flex items-center gap-2" onClick={() => setGroupBookingOpen(true)}>
+        <button className="btn-primary flex items-center gap-2" onClick={() => {
+          setBookingForm(f => ({ ...f, date: selectedDate }))
+          setGroupBookingOpen(true)
+        }}>
           <Users className="h-4 w-4" />
           团体包场
         </button>
+      </div>
+
+      <div className="text-sm text-surface-300">
+        排期日期：<span className="text-accent-400 font-medium">{formatDisplayDate(selectedDate)}</span>
+        {selectedDate === formatDate(new Date()) && <span className="ml-2 badge-green">今天</span>}
       </div>
 
       <div className="card overflow-hidden">
@@ -204,8 +286,12 @@ export default function Schedule() {
                     <div className="text-xs text-surface-400">{court.name}</div>
                   </td>
                   {timeSlots.map(ts => {
-                    const { status, reason, isBooking } = getSlotStatus(court, ts)
-                    const cellClass = isBooking ? bookingCellStyles : cellStyles[status]
+                    const { status, reason, overrideType } = getSlotStatus(court, ts)
+                    let cellClass = ''
+                    if (overrideType === 'booking') cellClass = bookingCellStyles
+                    else if (overrideType === 'reservation') cellClass = reservationCellStyles
+                    else cellClass = cellStyles[status]
+
                     return (
                       <td key={ts} className="py-2 px-1">
                         <div
@@ -213,15 +299,21 @@ export default function Schedule() {
                           onClick={() => handleCellClick(court, ts)}
                           title={reason ?? statusLabels[status]}
                         >
-                          {isBooking && <Calendar className="h-3 w-3 text-purple-400" />}
-                          {status === 'locked' && !isBooking && <Lock className="h-3 w-3 text-red-400" />}
+                          {overrideType === 'booking' && <Calendar className="h-3 w-3 text-purple-400" />}
+                          {overrideType === 'reservation' && <Calendar className="h-3 w-3 text-blue-400" />}
+                          {status === 'locked' && !overrideType && <Lock className="h-3 w-3 text-red-400" />}
                           {status === 'maintenance' && <Wrench className="h-3 w-3 text-surface-400" />}
                           <span className={
-                            isBooking ? 'text-purple-400' :
+                            overrideType === 'booking' ? 'text-purple-400' :
+                            overrideType === 'reservation' ? 'text-blue-400' :
                             status === 'available' ? 'text-accent-400' :
                             status === 'occupied' ? 'text-warning-400' :
                             status === 'locked' ? 'text-red-400' : 'text-surface-400'
-                          }>{isBooking ? '包场' : statusLabels[status]}</span>
+                          }>
+                            {overrideType === 'booking' ? '包场' :
+                             overrideType === 'reservation' ? '预约' :
+                             statusLabels[status]}
+                          </span>
                         </div>
                       </td>
                     )
@@ -231,12 +323,13 @@ export default function Schedule() {
             </tbody>
           </table>
         </div>
-        <div className="flex items-center gap-4 px-4 py-3 border-t border-surface-700/30 text-xs text-surface-400">
+        <div className="flex items-center gap-4 px-4 py-3 border-t border-surface-700/30 text-xs text-surface-400 flex-wrap">
           <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-accent-500/30 border border-accent-500/40" /> 可用</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-500/30 border border-blue-500/40" /> 预约</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-purple-500/30 border border-purple-500/40" /> 包场</span>
           <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-warning-500/30 border border-warning-500/40" /> 占用</span>
           <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-500/30 border border-red-500/40" /> 锁定</span>
           <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-surface-500/30 border border-surface-500/40" /> 维护</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-purple-500/30 border border-purple-500/40" /> 包场</span>
         </div>
       </div>
 
@@ -245,10 +338,17 @@ export default function Schedule() {
         <DataTable columns={pricingColumns} data={pricingData as unknown as Record<string, unknown>[]} />
       </div>
 
-      {groupBookings.length > 0 && (
+      {dateBookings.length > 0 && (
         <div className="card p-4">
-          <h3 className="text-sm font-semibold text-surface-200 mb-3">团体包场申请</h3>
-          <DataTable columns={bookingColumns} data={groupBookings as unknown as Record<string, unknown>[]} />
+          <h3 className="text-sm font-semibold text-surface-200 mb-3">今日团体包场申请</h3>
+          <DataTable columns={bookingColumns} data={dateBookings as unknown as Record<string, unknown>[]} />
+        </div>
+      )}
+
+      {otherBookings.length > 0 && (
+        <div className="card p-4">
+          <h3 className="text-sm font-semibold text-surface-200 mb-3">其他日期包场申请</h3>
+          <DataTable columns={bookingColumns} data={otherBookings as unknown as Record<string, unknown>[]} />
         </div>
       )}
 
@@ -257,6 +357,9 @@ export default function Schedule() {
           <div className="space-y-4">
             <div className="text-sm text-surface-300">
               场地：<span className="text-surface-100 font-medium">{selectedCourt.name}</span>
+            </div>
+            <div className="text-sm text-surface-300">
+              日期：<span className="text-surface-100 font-medium">{formatDisplayDate(selectedDate)}</span>
             </div>
             <div className="text-sm text-surface-300">
               时段：<span className="text-surface-100 font-medium">{selectedSlot}</span>
@@ -278,18 +381,27 @@ export default function Schedule() {
         )}
       </Modal>
 
-      <Modal isOpen={unlockModalOpen} onClose={() => setUnlockModalOpen(false)} title={unlockIsBooking ? '解锁包场' : '解锁场地'}>
+      <Modal isOpen={unlockModalOpen} onClose={() => setUnlockModalOpen(false)} title={unlockTitleMap[unlockOverrideType]}>
         {selectedCourt && (
           <div className="space-y-4">
             <div className="text-sm text-surface-300">
               场地：<span className="text-surface-100 font-medium">{selectedCourt.name}</span>
             </div>
             <div className="text-sm text-surface-300">
+              日期：<span className="text-surface-100 font-medium">{formatDisplayDate(selectedDate)}</span>
+            </div>
+            <div className="text-sm text-surface-300">
               时段：<span className="text-surface-100 font-medium">{selectedSlot}</span>
             </div>
             {unlockReason && (
               <div className="text-sm text-surface-300">
-                {unlockIsBooking ? '包场' : '锁定'}原因：<span className={unlockIsBooking ? 'text-purple-400' : 'text-red-400'}>{unlockReason}</span>
+                {unlockOverrideType === 'booking' ? '包场' : unlockOverrideType === 'reservation' ? '预约' : '锁定'}原因：
+                <span className={unlockOverrideType === 'booking' ? 'text-purple-400' : unlockOverrideType === 'reservation' ? 'text-blue-400' : 'text-red-400'}>{unlockReason}</span>
+              </div>
+            )}
+            {unlockOverrideType === 'court' && (
+              <div className="text-xs text-warning-400 bg-warning-500/10 rounded-lg p-2">
+                该场地整体已锁定，解锁此时段后将仅恢复此时段的可用状态
               </div>
             )}
             <div className="flex justify-end gap-3">
@@ -344,6 +456,11 @@ export default function Schedule() {
             <label className="block text-sm text-surface-400 mb-1">备注</label>
             <textarea className="input-field w-full h-20 resize-none" placeholder="备注信息" value={bookingForm.notes} onChange={e => setBookingForm(f => ({ ...f, notes: e.target.value }))} />
           </div>
+          {bookingForm.startTime && bookingForm.endTime && (
+            <div className="col-span-2 text-xs text-surface-400">
+              将覆盖时段：<span className="text-accent-400">{getBookedTimeSlots().join('、') || '无匹配时段'}</span>
+            </div>
+          )}
         </div>
         <div className="flex justify-end gap-3 mt-4">
           <button className="btn-secondary" onClick={() => setGroupBookingOpen(false)}>取消</button>

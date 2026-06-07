@@ -296,11 +296,46 @@ function generateDailyStats(): DailyStats[] {
 
 const dailyStats = generateDailyStats()
 
+const ALL_TIME_SLOTS = ['08-10', '10-12', '12-14', '14-16', '16-18', '18-20', '20-22']
+
+function timeSlotsFromRange(startTime: string, endTime: string): string[] {
+  const startHour = parseInt(startTime.split(':')[0] || '0')
+  const endHour = parseInt(endTime.split(':')[0] || '0')
+  const result: string[] = []
+  for (const ts of ALL_TIME_SLOTS) {
+    const [slotStart, slotEnd] = ts.split('-').map(Number)
+    if (slotStart < endHour && slotEnd > startHour) {
+      result.push(ts)
+    }
+  }
+  return result
+}
+
 interface SlotOverride {
   status: CourtStatus
   reason?: string
   bookingId?: string
+  reservationId?: string
 }
+
+function buildInitialOverrides(reservations: Reservation[]): Record<string, SlotOverride> {
+  const overrides: Record<string, SlotOverride> = {}
+  for (const r of reservations) {
+    if (r.status === 'confirmed') {
+      const slots = timeSlotsFromRange(r.startTime, r.endTime)
+      for (const ts of slots) {
+        overrides[`${r.courtId}|${r.date}|${ts}`] = {
+          status: 'occupied',
+          reason: `预约: ${r.memberName}`,
+          reservationId: r.id,
+        }
+      }
+    }
+  }
+  return overrides
+}
+
+const initialOverrides = buildInitialOverrides(reservations)
 
 interface AppState {
   sidebarCollapsed: boolean
@@ -328,8 +363,8 @@ interface AppState {
   setAlertCount: (count: number) => void
   confirmReservation: (id: string) => void
   cancelReservation: (id: string) => void
-  lockSlot: (courtId: string, timeSlot: string, reason: string) => void
-  unlockSlot: (courtId: string, timeSlot: string) => void
+  lockSlot: (courtId: string, date: string, timeSlot: string, reason: string) => void
+  unlockSlot: (courtId: string, date: string, timeSlot: string) => void
   lockCourt: (id: string, reason: string) => void
   unlockCourt: (id: string) => void
   approveRefund: (id: string) => void
@@ -350,6 +385,8 @@ interface AppState {
   addInspectionTask: (task: Omit<InspectionTask, 'id'>) => void
   addComplaint: (complaint: Omit<Complaint, 'id'>) => void
   addGroupBooking: (booking: Omit<GroupBooking, 'id'>) => void
+  confirmGroupBooking: (id: string) => void
+  cancelGroupBooking: (id: string) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -371,28 +408,56 @@ export const useAppStore = create<AppState>((set, get) => ({
   transactions,
   alerts,
   dailyStats,
-  slotOverrides: {},
+  slotOverrides: initialOverrides,
   groupBookings: [],
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setAlertCount: (count) => set({ alertCount: count }),
 
-  confirmReservation: (id) => set((s) => ({
-    reservations: s.reservations.map(r => r.id === id ? { ...r, status: 'confirmed' as const } : r)
+  confirmReservation: (id) => set((s) => {
+    const reservation = s.reservations.find(r => r.id === id)
+    if (!reservation) return s
+    const slots = timeSlotsFromRange(reservation.startTime, reservation.endTime)
+    const overrides = { ...s.slotOverrides }
+    for (const ts of slots) {
+      overrides[`${reservation.courtId}|${reservation.date}|${ts}`] = {
+        status: 'occupied',
+        reason: `预约: ${reservation.memberName}`,
+        reservationId: id,
+      }
+    }
+    return {
+      reservations: s.reservations.map(r => r.id === id ? { ...r, status: 'confirmed' as const } : r),
+      slotOverrides: overrides,
+    }
+  }),
+
+  cancelReservation: (id) => set((s) => {
+    const overrides = { ...s.slotOverrides }
+    for (const key of Object.keys(overrides)) {
+      if (overrides[key].reservationId === id) delete overrides[key]
+    }
+    return {
+      reservations: s.reservations.map(r => r.id === id ? { ...r, status: 'cancelled' as const } : r),
+      slotOverrides: overrides,
+    }
+  }),
+
+  lockSlot: (courtId, date, timeSlot, reason) => set((s) => ({
+    slotOverrides: { ...s.slotOverrides, [`${courtId}|${date}|${timeSlot}`]: { status: 'locked', reason } }
   })),
 
-  cancelReservation: (id) => set((s) => ({
-    reservations: s.reservations.map(r => r.id === id ? { ...r, status: 'cancelled' as const } : r)
-  })),
-
-  lockSlot: (courtId, timeSlot, reason) => set((s) => ({
-    slotOverrides: { ...s.slotOverrides, [`${courtId}|${timeSlot}`]: { status: 'locked', reason } }
-  })),
-
-  unlockSlot: (courtId, timeSlot) => set((s) => {
-    const next = { ...s.slotOverrides }
-    delete next[`${courtId}|${timeSlot}`]
-    return { slotOverrides: next }
+  unlockSlot: (courtId, date, timeSlot) => set((s) => {
+    const key = `${courtId}|${date}|${timeSlot}`
+    const court = s.venues.flatMap(v => v.courts).find(c => c.id === courtId)
+    if (court && court.status === 'available') {
+      const next = { ...s.slotOverrides }
+      delete next[key]
+      return { slotOverrides: next }
+    }
+    return {
+      slotOverrides: { ...s.slotOverrides, [key]: { status: 'available' as CourtStatus } }
+    }
   }),
 
   lockCourt: (id, reason) => set((s) => ({
@@ -514,12 +579,35 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   addGroupBooking: (booking) => set((s) => {
     const id = `gb${Date.now()}`
-    const overrides: Record<string, SlotOverride> = { ...s.slotOverrides }
-    for (const ts of booking.timeSlots) {
-      overrides[`${booking.courtId}|${ts}`] = { status: 'locked', reason: `团体包场: ${booking.contactName}`, bookingId: id }
-    }
     return {
       groupBookings: [{ ...booking, id }, ...s.groupBookings],
+    }
+  }),
+
+  confirmGroupBooking: (id) => set((s) => {
+    const booking = s.groupBookings.find(b => b.id === id)
+    if (!booking) return s
+    const overrides = { ...s.slotOverrides }
+    for (const ts of booking.timeSlots) {
+      overrides[`${booking.courtId}|${booking.date}|${ts}`] = {
+        status: 'locked',
+        reason: `团体包场: ${booking.contactName}`,
+        bookingId: id,
+      }
+    }
+    return {
+      groupBookings: s.groupBookings.map(b => b.id === id ? { ...b, status: 'confirmed' as const } : b),
+      slotOverrides: overrides,
+    }
+  }),
+
+  cancelGroupBooking: (id) => set((s) => {
+    const overrides = { ...s.slotOverrides }
+    for (const key of Object.keys(overrides)) {
+      if (overrides[key].bookingId === id) delete overrides[key]
+    }
+    return {
+      groupBookings: s.groupBookings.map(b => b.id === id ? { ...b, status: 'cancelled' as const } : b),
       slotOverrides: overrides,
     }
   }),

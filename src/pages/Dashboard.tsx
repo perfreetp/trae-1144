@@ -50,7 +50,7 @@ export default function Dashboard() {
     let hasOccupied = false
     let hasBooking = false
     for (const ts of timeSlots) {
-      const override = slotOverrides[`${court.id}|${ts}`]
+      const override = slotOverrides[`${court.id}|${TODAY}|${ts}`]
       if (override) {
         if (override.bookingId) hasBooking = true
         if (override.status === 'locked') hasLocked = true
