@@ -53,6 +53,7 @@ export interface Court {
   name: string
   status: CourtStatus
   pricingSlots: PricingSlot[]
+  lockReason?: string
 }
 
 export interface Venue {

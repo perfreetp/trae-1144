@@ -1,21 +1,18 @@
 import { Inbox } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-interface Column<T> {
+interface Column {
   key: string
   header: string
-  render?: (row: T, index: number) => React.ReactNode
+  render?: (row: any, index: number) => React.ReactNode
 }
 
-interface DataTableProps<T> {
-  columns: Column<T>[]
-  data: T[]
+interface DataTableProps {
+  columns: Column[]
+  data: Record<string, unknown>[]
 }
 
-export default function DataTable<T extends Record<string, unknown>>({
-  columns,
-  data,
-}: DataTableProps<T>) {
+export default function DataTable({ columns, data }: DataTableProps) {
   if (data.length === 0) {
     return (
       <div className="card flex flex-col items-center justify-center py-16">
